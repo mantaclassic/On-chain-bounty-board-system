@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
+// Imports
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
+// Errors
 error ZeroDeposit();
 
 error InvalidDeadline();
@@ -31,7 +33,9 @@ error AlreadySubmitted();
 
 error DailyTaskLimitReached(uint256 maxTasks);
 
+// Contract
 contract BountyBoard is Ownable, ReentrancyGuard {
+    //Structs
     struct Task {
         address creator;
         string description;
@@ -51,21 +55,24 @@ contract BountyBoard is Ownable, ReentrancyGuard {
         uint256 frozenAt;
     }
 
+    // Variables
     uint256 public nextTaskId;
 
     uint256 public maxDescriptionLength;
     uint256 public maxSolutionLength;
 
-    uint256 public constant FROZEN_FUNDS_DEADLINE = 48 hours;
-    uint256 public constant CREATION_FEE_BPS = 100;
-    uint256 public constant MAX_TASKS_PER_DAY = 1;
+    uint256 public constant FROZEN_FUNDS_DEADLINE = 48 hours; // The time before frozen funds expire
+    uint256 public constant CREATION_FEE_BPS = 100; // The fee for creating a task in basis points
+    uint256 public constant MAX_TASKS_PER_DAY = 1; // Max tasks that can created per day by a user
 
+    // Mappings
     mapping(uint256 => Task) public tasks;
     mapping(uint256 => Submission[]) public submissions;
     mapping(uint256 => mapping(address => bool)) public hasSubmitted;
     mapping(address => mapping(uint256 => uint256)) public tasksCreatedPerDay;
     mapping(address => FrozenFunds) public frozenFunds;
 
+    // Events
     event TaskCreated(address indexed creator, uint256 taskId, uint256 fee, uint256 timestamp);
     event SolutionSubmitted(uint256 taskId, uint256 submissionIndex, address indexed sender, uint256 timestamp);
     event TaskEnded(address indexed winner, address indexed creator, uint256 timestamp);
@@ -75,6 +82,7 @@ contract BountyBoard is Ownable, ReentrancyGuard {
     event FrozenFundsClaimed(address indexed user, uint256 amount, uint256 timestamp);
     event ExpiredFrozenFundsClaimed(uint256 amount, uint256 timestamp);
 
+    // Constructor
     constructor() Ownable(msg.sender) {
         nextTaskId = 1;
 
@@ -82,15 +90,16 @@ contract BountyBoard is Ownable, ReentrancyGuard {
         maxSolutionLength = 200;
     }
 
+    // Function for creating a task
     function createTask(string calldata description, uint256 deadline) external nonReentrant payable returns (uint256 taskId, uint256 fee) {
-        uint256 day = block.timestamp / 1 days;
-        if (tasksCreatedPerDay[msg.sender][day] >= MAX_TASKS_PER_DAY) revert DailyTaskLimitReached(MAX_TASKS_PER_DAY);
-        if (msg.value == 0) revert ZeroDeposit();
-        if (deadline <= block.timestamp) revert InvalidDeadline();
-        if (bytes(description).length >= maxDescriptionLength) revert DescriptionTooLarge(maxDescriptionLength);
+        uint256 day = block.timestamp / 1 days; // Calculates a day from this time
+        if (tasksCreatedPerDay[msg.sender][day] >= MAX_TASKS_PER_DAY) revert DailyTaskLimitReached(MAX_TASKS_PER_DAY); // If you already created a task and a day hasnt passed yet,revert
+        if (msg.value == 0) revert ZeroDeposit(); // Revert if the user didint make a deposit
+        if (deadline <= block.timestamp) revert InvalidDeadline(); // If the deadline is invalid then revert
+        if (bytes(description).length >= maxDescriptionLength) revert DescriptionTooLarge(maxDescriptionLength); // If the description is too long,revert to prevent too high gas fees
 
-        taskId = nextTaskId;
-        fee = (msg.value * CREATION_FEE_BPS) / 10000;
+        taskId = nextTaskId; // Assigns the task id
+        fee = (msg.value * CREATION_FEE_BPS) / 10000; // Calculates the fee
 
         tasks[taskId] = Task({
             creator: msg.sender,
@@ -99,20 +108,20 @@ contract BountyBoard is Ownable, ReentrancyGuard {
             deadline: deadline,
             completed: false,
             winner: address(0)
-        });
+        }); // Creates the task
 
-        tasksCreatedPerDay[msg.sender][day] += 1;
+        tasksCreatedPerDay[msg.sender][day] += 1; // Sets the task created by the user today
 
-        (bool success, ) = owner().call{value: fee}("");
+        (bool success, ) = owner().call{value: fee}(""); // Sends the fee to the owner
         if (!success) {
             FrozenFunds storage ff = frozenFunds[owner()];
             ff.amount += fee;
             ff.frozenAt = block.timestamp;
             emit FundsFroze(owner(), block.timestamp);
-        }
+        } // If the transfer reverts then instead of reverting,add the funds to the frozen funds section and create task
 
-        nextTaskId++;
-        emit TaskCreated(msg.sender, taskId, fee, block.timestamp);
+        nextTaskId++; // Add 1 to nextTaskId
+        emit TaskCreated(msg.sender, taskId, fee, block.timestamp); // Emits on chain proof of the task creation
     }
 
     function cancelTask(uint256 taskId, string calldata _reason) external nonReentrant {
@@ -232,4 +241,5 @@ contract BountyBoard is Ownable, ReentrancyGuard {
 
         emit ExpiredFrozenFundsClaimed(amount, block.timestamp);
     }
+
 } 
