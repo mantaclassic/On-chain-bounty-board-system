@@ -77,6 +77,7 @@ contract BountyBoard is Ownable, ReentrancyGuard {
     event SolutionSubmitted(uint256 taskId, uint256 submissionIndex, address indexed sender, uint256 timestamp);
     event TaskEnded(address indexed winner, address indexed creator, uint256 timestamp);
     event TaskCancelled(address indexed creator, uint256 taskId, string reason, uint256 timestamp);
+    event RewardReclaimed(address indexed creator, uint256 taskId, uint256 timestamp);
 
     event FundsFroze(address indexed user, uint256 timestamp);
     event FrozenFundsClaimed(address indexed user, uint256 amount, uint256 timestamp);
@@ -124,122 +125,128 @@ contract BountyBoard is Ownable, ReentrancyGuard {
         emit TaskCreated(msg.sender, taskId, fee, block.timestamp); // Emits on chain proof of the task creation
     }
 
+    // Function to cancel a task
     function cancelTask(uint256 taskId, string calldata _reason) external nonReentrant {
-        if (taskId >= nextTaskId) revert InvalidTask();
+        if (taskId >= nextTaskId) revert InvalidTask(); // Revert if the task id is invalid
 
-        Task storage t = tasks[taskId];
+        Task storage t = tasks[taskId]; // Get the task by the id
 
-        if (msg.sender != t.creator) revert Creator();
-        if (t.completed) revert TaskCompleted();
-        if (block.timestamp >= t.deadline) revert DeadlinePassed();
+        if (msg.sender != t.creator) revert Creator(); // Revert if the one that calls the function is not the creator of the task
+        if (t.completed) revert TaskCompleted(); // Revert if the task is already completed
+        if (block.timestamp >= t.deadline) revert DeadlinePassed(); // Revert if the deadline passed
 
-        t.completed = true;
+        t.completed = true; // Mark the task as completed
 
-        uint256 rwrd = t.reward;
-        t.reward = 0;
+        uint256 rwrd = t.reward; // Stores the reward before reseting it
+        t.reward = 0; // Change state first
 
-        (bool success, ) = t.creator.call{value: rwrd}("");
+        (bool success, ) = t.creator.call{value: rwrd}(""); // Refunds the reward back to the creator
         if (!success) {
             FrozenFunds storage ff = frozenFunds[t.creator];
             ff.amount += rwrd;
             ff.frozenAt = block.timestamp;
             emit FundsFroze(t.creator, block.timestamp);
-        }
+        } // If the transaction fails,do not stop the operation,but transfer the funds to the frozen funds section
 
-        emit TaskCancelled(t.creator, taskId, _reason, block.timestamp);
+        emit TaskCancelled(t.creator, taskId, _reason, block.timestamp); // Emits a on chain event of the task cancelation
     }
 
+    // A function for any user to submit solution to tasks
     function submitSolution(uint256 taskId, string calldata solution) external payable returns (uint256 submissionIndex) {
-        if (hasSubmitted[taskId][msg.sender]) revert AlreadySubmitted();
-        if (taskId >= nextTaskId) revert InvalidTask();
-        Task storage t = tasks[taskId];
-        if (t.completed) revert TaskCompleted();
-        if (block.timestamp >= t.deadline) revert DeadlinePassed();
-        if (msg.sender == t.creator) revert Creator();
-        if (bytes(solution).length >= maxSolutionLength) revert SolutionTooLarge(maxSolutionLength);
+        if (hasSubmitted[taskId][msg.sender]) revert AlreadySubmitted(); // Revert if you already submitted to this task
+        if (taskId >= nextTaskId) revert InvalidTask(); // Revert if the taskId is invalid
+        Task storage t = tasks[taskId]; // Get the task by the id
+        if (t.completed) revert TaskCompleted(); // Revert if the task is already completed
+        if (block.timestamp >= t.deadline) revert DeadlinePassed(); // Revert if the deadline passed
+        if (msg.sender == t.creator) revert Creator(); // Revert if you are the creator of the task
+        if (bytes(solution).length >= maxSolutionLength) revert SolutionTooLarge(maxSolutionLength); // Revert if the solution is too large soo we avoid high gas fees
 
-        hasSubmitted[taskId][msg.sender] = true;
-        submissionIndex = submissions[taskId].length;
+        hasSubmitted[taskId][msg.sender] = true; // Change state
+        submissionIndex = submissions[taskId].length; // Change state
 
         submissions[taskId].push(
             Submission({
                 submitter: msg.sender,
                 solution: solution
             })
-        );
+        ); // Create submission
 
-        emit SolutionSubmitted(taskId, submissionIndex, msg.sender, block.timestamp);
+        emit SolutionSubmitted(taskId, submissionIndex, msg.sender, block.timestamp); // Create a event with the submission
     }
 
+    // Function to accept solution
     function acceptSolution(uint256 taskId, uint256 submissionIndex) external nonReentrant {
-        if (taskId >= nextTaskId) revert InvalidTask();
-        Task storage t = tasks[taskId];
-        if (msg.sender != t.creator) revert Creator();
-        if (t.completed) revert TaskCompleted();
-        if (block.timestamp >= t.deadline) revert DeadlinePassed();
-        if (submissionIndex >= submissions[taskId].length) revert InvalidSubmission();
+        if (taskId >= nextTaskId) revert InvalidTask(); // Revert if the taskId is invalid
+        Task storage t = tasks[taskId]; // Get the task by the id
+        if (msg.sender != t.creator) revert Creator(); // Revert if you are not the creator of the task
+        if (t.completed) revert TaskCompleted(); // Revert if the task is already completed
+        if (block.timestamp >= t.deadline) revert DeadlinePassed(); // Revert if the deadline passed
+        if (submissionIndex >= submissions[taskId].length) revert InvalidSubmission(); // Revert if the submission is invalid
 
-        Submission storage s = submissions[taskId][submissionIndex];
+        Submission storage s = submissions[taskId][submissionIndex]; // Get the submission by the taskId and submissionIndex
 
-        t.winner = s.submitter;
-        t.completed = true;
+        t.winner = s.submitter; // Change state
+        t.completed = true; // Change state
 
-        uint256 rwrd = t.reward;
-        t.reward = 0;
+        uint256 rwrd = t.reward; // Store the reward before reseting it
+        t.reward = 0; // Reset reward
 
-        (bool success, ) = s.submitter.call{value: rwrd}("");
+        (bool success, ) = s.submitter.call{value: rwrd}(""); // Grant the reward to the accepted submitter
         if (!success) {
             FrozenFunds storage ff = frozenFunds[s.submitter];
             ff.amount += rwrd;
             ff.frozenAt = block.timestamp;
             emit FundsFroze(s.submitter, block.timestamp);
-        }
+        } // If the reward transfer fails just send the funds to the frozen funds and the winner can get them from there
 
-        emit TaskEnded(s.submitter, t.creator, block.timestamp);
+        emit TaskEnded(s.submitter, t.creator, block.timestamp); // Emit a on chain event with the task ending details
     }
 
     function reclaimReward(uint256 taskId) external nonReentrant {
-        Task storage t = tasks[taskId];
-        if (msg.sender != t.creator) revert Creator();
-        if (t.completed) revert TaskCompleted();
-        if (block.timestamp < t.deadline) revert TimeLock(block.timestamp, t.deadline);
+        Task storage t = tasks[taskId]; // Get the task by the task id
+        if (msg.sender != t.creator) revert Creator(); // Revert if you are not the creator
+        if (t.completed) revert TaskCompleted(); // Revert if the task is already completed
+        if (block.timestamp < t.deadline) revert TimeLock(block.timestamp, t.deadline); // Revert if the deadline didint pass
 
-        t.completed = true;
-        uint256 rwrd = t.reward;
-        t.reward = 0;
+        t.completed = true; // Change state
+        uint256 rwrd = t.reward; // Store the reward before reseting it
+        t.reward = 0; // Reset reward
 
-        (bool success, ) = t.creator.call{value: rwrd}("");
+        (bool success, ) = t.creator.call{value: rwrd}(""); // Refund creator
         if (!success) {
             FrozenFunds storage ff = frozenFunds[t.creator];
             ff.amount += rwrd;
             ff.frozenAt = block.timestamp;
             emit FundsFroze(t.creator, block.timestamp);
-        }
+        } // If transfer fails,send funds to frozen funds
+
+        emit RewardReclaimed(t.creator, taskId, block.timestamp); // Creates on chain proof of the reclaiming of the rewards
     }
 
+    // Claim frozen funds function
     function claimFrozenFunds() external nonReentrant {
-        if (frozenFunds[msg.sender].amount == 0) revert NoFrozenFunds();
+        if (frozenFunds[msg.sender].amount == 0) revert NoFrozenFunds(); // Revert if the user has no frozen funds
 
-        uint256 amount = frozenFunds[msg.sender].amount;
-        delete(frozenFunds[msg.sender]);
+        uint256 amount = frozenFunds[msg.sender].amount; // Get the frozen amount
+        delete(frozenFunds[msg.sender]); // Change state
 
-        (bool success, ) = msg.sender.call{value: amount}("");
-        if (!success) revert TransferFailed();
+        (bool success, ) = msg.sender.call{value: amount}(""); // Make the transfer
+        if (!success) revert TransferFailed(); // If the transfer failed,revert
 
-        emit FrozenFundsClaimed(msg.sender, amount, block.timestamp);
+        emit FrozenFundsClaimed(msg.sender, amount, block.timestamp); // Emits a on chain event with the description of the frozen funds reclaiming
     }
 
+    // Function for the owner to claim expired frozen funds so we do not get stuck funds in the contract
     function claimExpiredFrozenFunds(address userAddress) external nonReentrant onlyOwner {
-        if (frozenFunds[userAddress].amount == 0) revert NoFrozenFunds();
-        if (block.timestamp < frozenFunds[userAddress].frozenAt + FROZEN_FUNDS_DEADLINE) revert TimeLock(block.timestamp, frozenFunds[userAddress].frozenAt + FROZEN_FUNDS_DEADLINE);
+        if (frozenFunds[userAddress].amount == 0) revert NoFrozenFunds(); // Revert if there are no frozen funds assigned to the userAddress
+        if (block.timestamp < frozenFunds[userAddress].frozenAt + FROZEN_FUNDS_DEADLINE) revert TimeLock(block.timestamp, frozenFunds[userAddress].frozenAt + FROZEN_FUNDS_DEADLINE); // Revert if the funds didin`t expire yet
 
-        uint256 amount = frozenFunds[userAddress].amount;
-        delete(frozenFunds[userAddress]);
+        uint256 amount = frozenFunds[userAddress].amount; // Gets the frozen amount
+        delete(frozenFunds[userAddress]); // Change state
 
-        (bool success, ) = owner().call{value: amount}("");
-        if (!success) revert TransferFailed();
+        (bool success, ) = owner().call{value: amount}(""); // Makes the transfer
+        if (!success) revert TransferFailed(); // Revert if the transfer failed
 
-        emit ExpiredFrozenFundsClaimed(amount, block.timestamp);
+        emit ExpiredFrozenFundsClaimed(amount, block.timestamp); // Emit on chain proof of the expired frozen funds claiming
     }
-
 } 
